@@ -479,6 +479,57 @@ class CloudFormationStackResource(Resource):
             set_value_from_jmespath(resource_dict, self.PROPERTY_NAME, s3_path_url)
 
 
+class CloudFormationStackSetResource(Resource):
+    """
+    Represents CloudFormation::StackSet resource that can refer to a stack set
+    template via TemplateURL property.
+    """
+    RESOURCE_TYPE = "AWS::CloudFormation::StackSet"
+    PROPERTY_NAME = "TemplateURL"
+
+    def __init__(self, uploader):
+        super(CloudFormationStackSetResource, self).__init__(uploader)
+
+    def do_export(self, resource_id, resource_dict, parent_dir):
+        """
+        If the stack set template is valid, this method will
+        export on the stack set template, upload the exported template to S3
+        and set property to URL of the uploaded S3 template
+        """
+
+        template_path = resource_dict.get(self.PROPERTY_NAME, None)
+
+        if template_path is None or is_s3_url(template_path) or \
+                template_path.startswith("http://") or \
+                template_path.startswith("https://"):
+            # Nothing to do
+            return
+
+        abs_template_path = make_abs_path(parent_dir, template_path)
+        if not is_local_file(abs_template_path):
+            raise exceptions.InvalidTemplateUrlParameterError(
+                    property_name=self.PROPERTY_NAME,
+                    resource_id=resource_id,
+                    template_path=abs_template_path)
+
+        exported_template_dict = \
+            Template(template_path, parent_dir, self.uploader).export()
+
+        exported_template_str = yaml_dump(exported_template_dict)
+
+        with mktempfile() as temporary_file:
+            temporary_file.write(exported_template_str)
+            temporary_file.flush()
+
+            url = self.uploader.upload_with_dedup(
+                    temporary_file.name, "template")
+
+            # TemplateUrl property requires S3 URL to be in path-style format
+            parts = parse_s3_url(url, version_property="Version")
+            s3_path_url = self.uploader.to_path_style_s3_url(
+                    parts["Key"], parts.get("Version", None))
+            set_value_from_jmespath(resource_dict, self.PROPERTY_NAME, s3_path_url)
+
 class ServerlessApplicationResource(CloudFormationStackResource):
     """
     Represents Serverless::Application resource that can refer to a nested
@@ -510,6 +561,7 @@ RESOURCES_EXPORT_LIST = [
     LambdaFunctionResource,
     ElasticBeanstalkApplicationVersion,
     CloudFormationStackResource,
+    CloudFormationStackSetResource,
     ServerlessApplicationResource,
     ServerlessLayerVersionResource,
     LambdaLayerVersionResource,
